@@ -1,53 +1,48 @@
-name: Build Windows ARM64
+name: Build Windows ARM64 (Native)
 
 on:
-  workflow_dispatch: # 允许你手动点击按钮触发编译
+  workflow_dispatch: # 允许手动点击按钮触发
+  push:
+    branches: [ "master", "main" ]
 
 jobs:
   build:
-    runs-on: windows-latest # 使用 GitHub 的 Windows 环境（默认是 x64）
+    name: Build on Windows ARM64
+    # 关键点：直接使用 ARM64 的 Runner，只有公共仓库(Public Repo)免费可用
+    runs-on: windows-11-arm
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
       - name: Install Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: 'stable' # 使用稳定版，避免未知错误
+          channel: 'stable'
+          # 通常 action 会自动检测架构，但显式指定更稳妥
+          architecture: arm64 
 
-      - name: Enable Desktop Support
-        run: |
-          flutter config --enable-windows-desktop
-
-      - name: Modify CMake for ARM64 (The Magic Step)
-        shell: powershell
-        run: |
-          # 这是一个 PowerShell 脚本，它会自动把 "set(CMAKE_GENERATOR_PLATFORM "ARM64")" 
-          # 插入到 windows/CMakeLists.txt 的正确位置
-          $file = "windows/CMakeLists.txt"
-          $content = Get-Content $file
-          # 在文件开头插入配置
-          $newContent = @("set(CMAKE_GENERATOR_PLATFORM ""ARM64"")") + $content
-          Set-Content $file $newContent
-          Write-Host "CMakeLists.txt modified successfully for ARM64!"
-
-      - name: Get Dependencies
+      - name: Install Dependencies
         run: flutter pub get
 
       - name: Build Windows Release
+        # 因为是在原生 ARM64 机器上跑，直接 build 就会生成 ARM64 程序
         run: flutter build windows --release
-        # 注意：这里不需要加 --arch 参数，因为我们在上面的步骤里通过修改 CMake 文件强制指定了 ARM64
 
-      - name: Prepare Artifacts
+      - name: Organize Artifacts
         shell: powershell
         run: |
-          # 创建一个发布文件夹
+          # 创建打包目录
           New-Item -ItemType Directory -Force -Path "release_output"
-          # 把编译生成的文件复制出来
+          # 复制生成的文件
           Copy-Item -Path "build\windows\runner\Release\*" -Destination "release_output" -Recurse
+          
+          # 【重要检查】
+          # 如果 PiliPlus 的自动脚本下载了错误的 DLL，你可能需要在这里手动下载 ARM64 的 libmpv-2.dll 并覆盖
+          # 但在原生环境下，media_kit 有很大通过检测系统架构自动下载正确的文件。
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PiliPlus-Windows-ARM64-Unpackaged
+          name: PiliPlus-Windows-ARM64-Native
           path: release_output/
