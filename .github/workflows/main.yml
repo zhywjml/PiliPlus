@@ -1,19 +1,22 @@
 name: Build for Windows ARM64
 
 on:
-  workflow_dispatch: # 允许手动触发
-  push:
-    branches: [ "master", "main" ] # 也可以让它在提交代码时自动跑
+  workflow_call:
+    inputs:
+      tag:
+        description: "tag"
+        required: false
+        default: ""
+        type: string
+  workflow_dispatch:
 
 jobs:
-  build-windows-arm64:
+  build-windows-app:
     name: Release Windows ARM64
-    # 核心修改 1: 使用 GitHub 最新的原生 ARM64 Runner
     runs-on: windows-11-arm
-
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4 # 升级到 v4 (v6 应该是笔误，目前最新只有 v4)
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -22,65 +25,56 @@ jobs:
         with:
           channel: stable
           flutter-version-file: pubspec.yaml
-          architecture: arm64 # 核心修改 2: 明确指定使用 ARM64 架构的 Flutter SDK
 
-      - name: Install Dependencies
-        run: flutter pub get
+      - name: Add fastforge and Inno Setup
+        run: |
+          dart pub global activate fastforge
+          choco install innosetup
 
-      # 保留原项目的版本号提取脚本（如果它不依赖 x64 工具的话通常没问题）
+      - name: Add Chinese language file for Inno Setup
+        run: |
+          Copy-Item "windows/packaging/exe/ChineseSimplified.isl" "C:\Program Files\Inno Setup 6\Languages\ChineseSimplified.isl"
+        shell: pwsh
+
       - name: Set and Extract version
         shell: pwsh
+        run: lib/scripts/build.ps1
+
+      - name: Build Windows
         run: |
-          if (Test-Path "lib/scripts/build.ps1") {
-            ./lib/scripts/build.ps1
-          } else {
-            Write-Host "Build script not found, skipping version extraction."
-          }
+          fastforge package --platform windows --targets exe --flutter-build-args="dart-define-from-file=pili_release.json"
 
-      - name: Build Windows (Native ARM64)
-        # 核心修改 3: 暂时移除 fastforge/innosetup，直接用原生命令构建
-        # 注意：我保留了 dart-define 参数，如果你的项目根目录没有 pili_release.json，请删除这部分参数
+      - name: Prepare Upload
         run: |
-          flutter build windows --release --dart-define-from-file=pili_release.json
-        continue-on-error: true # 如果上面因为缺 json 文件报错，尝试不带参数跑一次
-
-      - name: Build Windows (Retry without JSON if failed)
-        if: failure()
-        run: flutter build windows --release
-
-      - name: Organize & Fix DLLs
-        shell: pwsh
-        run: |
-          # 1. 创建输出目录
-          New-Item -ItemType Directory -Force -Path "Release/PiliPlus-Win-ARM64"
-          
-          # 2. 核心修改 4: 路径从 build/windows/x64 改为 build/windows/arm64
-          # 注意：在原生 ARM64 机器上，有时路径里不带 arm64，有时带。这里做个智能判断。
-          $SourcePath = "build\windows\arm64\runner\Release"
-          if (-not (Test-Path $SourcePath)) {
-            $SourcePath = "build\windows\runner\Release"
-          }
-          Write-Host "Copying files from: $SourcePath"
-          Copy-Item -Path "$SourcePath\*" -Destination "Release/PiliPlus-Win-ARM64" -Recurse
-
-          # 3. 【关键保险】检查 libmpv-2.dll 是否为 ARM64 版本
-          # 有时候 media_kit 脚本会误判下载 x64 的 dll，我们在这里强制纠正
-          $DllUrl = "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20240422/mpv-dev-aarch64-20240422-git-52f9746.7z"
-          $OutDir = "Release/PiliPlus-Win-ARM64"
-          
-          # 下载并解压正确的 DLL (简单的防呆措施)
-          Write-Host "Downloading verified ARM64 libmpv-2.dll..."
-          Invoke-WebRequest -Uri $DllUrl -OutFile "mpv-arm64.7z"
-          7z e mpv-arm64.7z -o"$OutDir" libmpv-2.dll -y
-          Remove-Item "mpv-arm64.7z"
+          mkdir -p Release/PiliPlus-Win
+          mkdir -p PiliPlus-Win-Setup
+          mv build/windows/arm64/runner/Release/* Release/PiliPlus-Win/
+          mv dist/**/*.exe PiliPlus-Win-Setup/PiliPlus_windows_${{env.version}}_ARM64_setup.exe
 
       - name: Compress
+        if: ${{ github.event.inputs.tag != '' }}
         run: |
-          Compress-Archive -Path "Release/PiliPlus-Win-ARM64" -DestinationPath "PiliPlus_windows_arm64.zip"
+          Compress-Archive -Path "Release/PiliPlus-Win" -DestinationPath "PiliPlus_windows_${{env.version}}_ARM64.zip"
         shell: pwsh
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+      - name: Release
+        if: ${{ github.event.inputs.tag != '' }}
+        uses: softprops/action-gh-release@v2
         with:
-          name: PiliPlus-Windows-ARM64-Build
-          path: PiliPlus_windows_arm64.zip
+          tag_name: ${{ github.event.inputs.tag }}
+          name: ${{ github.event.inputs.tag }}
+          files: |
+            PiliPlus_windows_*.zip
+            PiliPlus-Win-Setup/PiliPlus_windows_*.exe
+
+      - name: Upload windows file release
+        uses: actions/upload-artifact@v5
+        with:
+          name: Windows-file-ARM64-release
+          path: Release
+
+      - name: Upload windows setup release
+        uses: actions/upload-artifact@v5
+        with:
+          name: Windows-setup-ARM64-release
+          path: PiliPlus-Win-Setup
