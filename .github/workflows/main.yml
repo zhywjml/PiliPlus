@@ -11,12 +11,13 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-windows-app:
+  build-windows-arm64:
     name: Release Windows ARM64
-    runs-on: windows-11-arm
+    # 1. 推荐：使用标准的 x64 Runner (最稳定)
+    runs-on: windows-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -24,7 +25,9 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: stable
-          flutter-version-file: pubspec.yaml
+          # 2. 关键：不要写 architecture: arm64
+          # 默认下载 x64 SDK，它可以编译出 ARM64 的程序
+          # 也不要写 flutter-version-file
 
       - name: Add fastforge and Inno Setup
         run: |
@@ -33,48 +36,50 @@ jobs:
 
       - name: Add Chinese language file for Inno Setup
         run: |
-          Copy-Item "windows/packaging/exe/ChineseSimplified.isl" "C:\Program Files\Inno Setup 6\Languages\ChineseSimplified.isl"
+          Copy-Item "windows/packaging/exe/ChineseSimplified.isl" "C:\Program Files (x86)\Inno Setup 6\Languages\ChineseSimplified.isl"
         shell: pwsh
 
       - name: Set and Extract version
         shell: pwsh
         run: lib/scripts/build.ps1
 
-      - name: Build Windows
+      - name: Build Windows ARM64
+        # 3. 核心：明确告诉 Flutter 即使在 x64 机器上，也要编译出 arm64 的程序
         run: |
-          fastforge package --platform windows --targets exe --flutter-build-args="dart-define-from-file=pili_release.json"
+          fastforge package --platform windows --targets exe --flutter-build-args="dart-define-from-file=pili_release.json --arch=arm64"
 
       - name: Prepare Upload
         run: |
-          mkdir -p Release/PiliPlus-Win
-          mkdir -p PiliPlus-Win-Setup
-          mv build/windows/arm64/runner/Release/* Release/PiliPlus-Win/
-          mv dist/**/*.exe PiliPlus-Win-Setup/PiliPlus_windows_${{env.version}}_ARM64_setup.exe
+          mkdir -p Release/PiliPlus-Win-Arm64
+          mkdir -p PiliPlus-Win-Arm64-Setup
+          # 产物路径在 arm64 文件夹下
+          mv build/windows/arm64/runner/Release/* Release/PiliPlus-Win-Arm64/
+          mv dist/**/*.exe PiliPlus-Win-Arm64-Setup/PiliPlus_windows_${{env.version}}_ARM64_setup.exe
 
       - name: Compress
-        if: ${{ github.event.inputs.tag != '' }}
+        if: ${{ inputs.tag != '' || github.event.inputs.tag != '' }}
         run: |
-          Compress-Archive -Path "Release/PiliPlus-Win" -DestinationPath "PiliPlus_windows_${{env.version}}_ARM64.zip"
+          Compress-Archive -Path "Release/PiliPlus-Win-Arm64" -DestinationPath "PiliPlus_windows_${{env.version}}_ARM64.zip"
         shell: pwsh
 
       - name: Release
-        if: ${{ github.event.inputs.tag != '' }}
+        if: ${{ inputs.tag != '' || github.event.inputs.tag != '' }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag }}
-          name: ${{ github.event.inputs.tag }}
+          tag_name: ${{ inputs.tag || github.event.inputs.tag }}
+          name: ${{ inputs.tag || github.event.inputs.tag }}
           files: |
-            PiliPlus_windows_*.zip
-            PiliPlus-Win-Setup/PiliPlus_windows_*.exe
+            PiliPlus_windows_*_ARM64.zip
+            PiliPlus-Win-Arm64-Setup/PiliPlus_windows_*_ARM64_setup.exe
 
       - name: Upload windows file release
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
           name: Windows-file-ARM64-release
           path: Release
 
       - name: Upload windows setup release
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
           name: Windows-setup-ARM64-release
-          path: PiliPlus-Win-Setup
+          path: PiliPlus-Win-Arm64-Setup
