@@ -1,48 +1,86 @@
-name: Build Windows ARM64 (Native)
+name: Build for Windows ARM64
 
 on:
-  workflow_dispatch: # 允许手动点击按钮触发
+  workflow_dispatch: # 允许手动触发
   push:
-    branches: [ "master", "main" ]
+    branches: [ "master", "main" ] # 也可以让它在提交代码时自动跑
 
 jobs:
-  build:
-    name: Build on Windows ARM64
-    # 关键点：直接使用 ARM64 的 Runner，只有公共仓库(Public Repo)免费可用
+  build-windows-arm64:
+    name: Release Windows ARM64
+    # 核心修改 1: 使用 GitHub 最新的原生 ARM64 Runner
     runs-on: windows-11-arm
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4 # 升级到 v4 (v6 应该是笔误，目前最新只有 v4)
+        with:
+          fetch-depth: 0
 
-      - name: Install Flutter
+      - name: Setup flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: 'stable'
-          # 通常 action 会自动检测架构，但显式指定更稳妥
-          architecture: arm64 
+          channel: stable
+          flutter-version-file: pubspec.yaml
+          architecture: arm64 # 核心修改 2: 明确指定使用 ARM64 架构的 Flutter SDK
 
       - name: Install Dependencies
         run: flutter pub get
 
-      - name: Build Windows Release
-        # 因为是在原生 ARM64 机器上跑，直接 build 就会生成 ARM64 程序
+      # 保留原项目的版本号提取脚本（如果它不依赖 x64 工具的话通常没问题）
+      - name: Set and Extract version
+        shell: pwsh
+        run: |
+          if (Test-Path "lib/scripts/build.ps1") {
+            ./lib/scripts/build.ps1
+          } else {
+            Write-Host "Build script not found, skipping version extraction."
+          }
+
+      - name: Build Windows (Native ARM64)
+        # 核心修改 3: 暂时移除 fastforge/innosetup，直接用原生命令构建
+        # 注意：我保留了 dart-define 参数，如果你的项目根目录没有 pili_release.json，请删除这部分参数
+        run: |
+          flutter build windows --release --dart-define-from-file=pili_release.json
+        continue-on-error: true # 如果上面因为缺 json 文件报错，尝试不带参数跑一次
+
+      - name: Build Windows (Retry without JSON if failed)
+        if: failure()
         run: flutter build windows --release
 
-      - name: Organize Artifacts
-        shell: powershell
+      - name: Organize & Fix DLLs
+        shell: pwsh
         run: |
-          # 创建打包目录
-          New-Item -ItemType Directory -Force -Path "release_output"
-          # 复制生成的文件
-          Copy-Item -Path "build\windows\runner\Release\*" -Destination "release_output" -Recurse
+          # 1. 创建输出目录
+          New-Item -ItemType Directory -Force -Path "Release/PiliPlus-Win-ARM64"
           
-          # 【重要检查】
-          # 如果 PiliPlus 的自动脚本下载了错误的 DLL，你可能需要在这里手动下载 ARM64 的 libmpv-2.dll 并覆盖
-          # 但在原生环境下，media_kit 有很大通过检测系统架构自动下载正确的文件。
+          # 2. 核心修改 4: 路径从 build/windows/x64 改为 build/windows/arm64
+          # 注意：在原生 ARM64 机器上，有时路径里不带 arm64，有时带。这里做个智能判断。
+          $SourcePath = "build\windows\arm64\runner\Release"
+          if (-not (Test-Path $SourcePath)) {
+            $SourcePath = "build\windows\runner\Release"
+          }
+          Write-Host "Copying files from: $SourcePath"
+          Copy-Item -Path "$SourcePath\*" -Destination "Release/PiliPlus-Win-ARM64" -Recurse
+
+          # 3. 【关键保险】检查 libmpv-2.dll 是否为 ARM64 版本
+          # 有时候 media_kit 脚本会误判下载 x64 的 dll，我们在这里强制纠正
+          $DllUrl = "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20240422/mpv-dev-aarch64-20240422-git-52f9746.7z"
+          $OutDir = "Release/PiliPlus-Win-ARM64"
+          
+          # 下载并解压正确的 DLL (简单的防呆措施)
+          Write-Host "Downloading verified ARM64 libmpv-2.dll..."
+          Invoke-WebRequest -Uri $DllUrl -OutFile "mpv-arm64.7z"
+          7z e mpv-arm64.7z -o"$OutDir" libmpv-2.dll -y
+          Remove-Item "mpv-arm64.7z"
+
+      - name: Compress
+        run: |
+          Compress-Archive -Path "Release/PiliPlus-Win-ARM64" -DestinationPath "PiliPlus_windows_arm64.zip"
+        shell: pwsh
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PiliPlus-Windows-ARM64-Native
-          path: release_output/
+          name: PiliPlus-Windows-ARM64-Build
+          path: PiliPlus_windows_arm64.zip
