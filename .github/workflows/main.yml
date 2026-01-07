@@ -43,11 +43,26 @@ jobs:
         shell: pwsh
         run: lib/scripts/build.ps1
 
+# 1. 修正构建命令 (加上缺失的 --)
       - name: Build Windows ARM64
-        # 3. 核心：明确告诉 Flutter 即使在 x64 机器上，也要编译出 arm64 的程序
         run: |
-          fastforge package --platform windows --targets exe --flutter-build-args="dart-define-from-file=pili_release.json --arch=arm64"
+          fastforge package --platform windows --targets exe --flutter-build-args="--dart-define-from-file=pili_release.json --arch=arm64"
+        # 注意：这里 dart-define 前面加上了 -- 
 
+      # 2. 新增：调试步骤 (如果再次失败，这个步骤会告诉我们要找的文件在哪)
+      - name: Debug - List Build Directory
+        if: always() # 即使上面失败也运行
+        run: |
+          Get-ChildItem -Path build/windows -Recurse
+        shell: pwsh
+
+      - name: Prepare Upload
+        run: |
+          mkdir -p Release/PiliPlus-Win-Arm64
+          mkdir -p PiliPlus-Win-Arm64-Setup
+          # 3. 移动文件 (现在应该能找到 arm64 了)
+          mv build/windows/arm64/runner/Release/* Release/PiliPlus-Win-Arm64/
+          mv dist/**/*.exe PiliPlus-Win-Arm64-Setup/PiliPlus_windows_${{env.version}}_ARM64_setup.exe
       - name: Prepare Upload
         run: |
           mkdir -p Release/PiliPlus-Win-Arm64
